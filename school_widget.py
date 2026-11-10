@@ -71,7 +71,8 @@ SAMPLE_TIMETABLE = [
 DEFAULT_DATA = {
     "settings": {
         "theme": "dark",            # dark | light
-        "opacity": 0.93,
+        "opacity": 0.6,             # 배경판 불투명도 (글자는 항상 선명)
+        "blur": False,               # (실험적) 배경 흐림 효과
         "layer": "bottom",          # bottom(바탕화면 고정) | normal | top(항상 위)
         "locked": False,
         "visible": {"calendar": True, "timetable": True, "events": True},
@@ -368,25 +369,41 @@ def win_hwnd(widget):
     return ctypes.windll.user32.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT
 
 
-def win_send_to_bottom(widget):
+def win_stack_bottom(content, glass):
+    """바탕화면 고정: content 를 맨 아래로, glass 는 바로 그 밑으로."""
     if not IS_WIN:
         return
     try:
         import ctypes
-        # HWND_BOTTOM=1, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE
-        ctypes.windll.user32.SetWindowPos(win_hwnd(widget), 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        flags = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        hc = win_hwnd(content)
+        ctypes.windll.user32.SetWindowPos(hc, 1, 0, 0, 0, 0, flags)  # HWND_BOTTOM
+        ctypes.windll.user32.SetWindowPos(win_hwnd(glass), hc, 0, 0, 0, 0, flags)
     except Exception:
         pass
 
 
-def win_round_corners(widget):
+def win_blur(widget, enable, tint="#1c1c1e"):
+    """(실험적) Windows 10/11 배경 흐림 효과 - 배경판 창에만 적용."""
     if not IS_WIN:
         return
     try:
         import ctypes
-        pref = ctypes.c_int(2)  # DWMWCP_ROUND (Windows 11)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            win_hwnd(widget), 33, ctypes.byref(pref), ctypes.sizeof(pref))
+        from ctypes import wintypes
+
+        class ACCENT(ctypes.Structure):
+            _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
+                        ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
+
+        class WCAD(ctypes.Structure):
+            _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.POINTER(ACCENT)),
+                        ("SizeOfData", ctypes.c_size_t)]
+        r, g, b = int(tint[1:3], 16), int(tint[3:5], 16), int(tint[5:7], 16)
+        accent = ACCENT(3 if enable else 0, 2, (0x99 << 24) | (b << 16) | (g << 8) | r, 0)
+        data = WCAD(19, ctypes.pointer(accent), ctypes.sizeof(accent))  # WCA_ACCENT_POLICY
+        fn = ctypes.windll.user32.SetWindowCompositionAttribute
+        fn.argtypes = [wintypes.HWND, ctypes.POINTER(WCAD)]
+        fn(win_hwnd(widget), ctypes.byref(data))
     except Exception:
         pass
 
@@ -430,40 +447,56 @@ def open_folder(path):
 
 
 # ----------------------------------------------------------------------------
-# 테마 / 글꼴
+# 테마 / 글꼴  -  macOS 위젯 느낌의 반투명 "글래스" 스타일
+#
+# 위젯 하나 = 창 2개
+#   glass : 둥근 모서리의 반투명 배경판 (불투명도 조절)
+#   content: 글자·아이콘만 100% 선명하게 보이는 창 (배경색 = 투명 처리 색)
+# 이렇게 해야 배경은 비치면서도 글자는 흐려지지 않습니다.
 # ----------------------------------------------------------------------------
 
 THEMES = {
     "dark": {
-        "bg": "#1e2230", "card": "#262b3c", "border": "#3a4158", "fg": "#e9ecf5",
-        "muted": "#8a92a8", "accent": "#5b8cff", "accent_fg": "#ffffff",
-        "accent_soft": "#2f3d66", "sun": "#ff6b6b", "sat": "#6ba8ff",
-        "dot": "#ffc857", "now": "#3ddc97", "past": "#5d647a",
+        "glass": "#1c1c1e", "key": "#1b1c1e", "edge": "#3a3a3c",
+        "fg": "#f5f5f7", "muted": "#a1a1a6", "faint": "#7c7c80", "line": "#3a3a3c",
+        "red": "#ff453a", "blue": "#0a84ff", "green": "#30d158",
+        "orange": "#ff9f0a", "purple": "#bf5af2", "teal": "#64d2ff", "on_accent": "#ffffff",
     },
     "light": {
-        "bg": "#f7f8fc", "card": "#ffffff", "border": "#d9dceb", "fg": "#222634",
-        "muted": "#7a8196", "accent": "#3d6df2", "accent_fg": "#ffffff",
-        "accent_soft": "#e3eaff", "sun": "#e03131", "sat": "#1c7ed6",
-        "dot": "#f08c00", "now": "#2b9a66", "past": "#b3b8c6",
+        "glass": "#f5f5f7", "key": "#f4f5f7", "edge": "#d1d1d6",
+        "fg": "#1d1d1f", "muted": "#6e6e73", "faint": "#8e8e93", "line": "#d1d1d6",
+        "red": "#ff3b30", "blue": "#007aff", "green": "#34c759",
+        "orange": "#ff9500", "purple": "#af52de", "teal": "#32ade6", "on_accent": "#ffffff",
     },
 }
+GLASS_KEY = "#ff00fe"  # 배경판의 둥근 모서리 바깥(완전 투명) 색
+EVENT_COLORS = ("orange", "green", "purple", "teal", "blue")
+RADIUS = 22
 
 
 class Fonts:
     def __init__(self, root):
         fams = set(tkfont.families(root))
-        family = "TkDefaultFont"
-        for cand in ("맑은 고딕", "Malgun Gothic", "Noto Sans CJK KR", "NanumGothic",
-                     "Apple SD Gothic Neo", "Noto Sans KR", "WenQuanYi Zen Hei"):
-            if cand in fams:
-                family = cand
-                break
+
+        def pick(*cands):
+            for c in cands:
+                if c in fams:
+                    return c
+            return "TkDefaultFont"
+        family = pick("맑은 고딕", "Malgun Gothic", "Pretendard", "Noto Sans CJK KR", "NanumGothic",
+                      "Apple SD Gothic Neo", "Noto Sans KR", "WenQuanYi Zen Hei")
+        num = pick("Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", "SF Pro Display", family)
         self.family = family
+        self.caption = (family, 9, "bold")
         self.small = (family, 9)
         self.normal = (family, 10)
         self.bold = (family, 10, "bold")
-        self.title = (family, 11, "bold")
-        self.big = (family, 13, "bold")
+        self.title = (family, 12, "bold")
+        self.hero = (family, 20, "bold")
+        self.num_small = (num, 9)
+        self.num = (num, 10)
+        self.num_bold = (num, 10, "bold")
+        self.num_big = (num, 26, "bold")
 
 
 def parse_hm(s):
@@ -475,125 +508,198 @@ def parse_hm(s):
 
 
 def fmt_date(d):
-    return "%d/%d (%s)" % (d.month, d.day, DAYS[d.weekday()])
+    return "%d월 %d일 %s요일" % (d.month, d.day, DAYS[d.weekday()])
+
+
+def fmt_short(d):
+    return "%d/%d %s" % (d.month, d.day, DAYS[d.weekday()])
+
+
+def round_rect(canvas, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, splinesteps=24, **kw)
+
+
+def set_attr(win, name, value):
+    try:
+        win.attributes(name, value)
+        return True
+    except tk.TclError:  # 예: X11 에는 -transparentcolor 가 없음
+        return False
 
 
 # ----------------------------------------------------------------------------
-# 위젯 기본 클래스 (테두리 없는 창 + 드래그 + 오른쪽 클릭 메뉴)
+# 위젯 기본 클래스
 # ----------------------------------------------------------------------------
 
 class BaseWidget(tk.Toplevel):
+    """content 창. 뒤에 self.glass(반투명 둥근 배경판)를 함께 관리한다."""
     key = "base"
     caption = ""
+    caption_color = "blue"
     default_pos = (100, 100)
+    min_width = 300
 
     def __init__(self, app):
-        super().__init__(app.root)
         self.app = app
         self.T = app.theme
         self.F = app.fonts
+        T = self.T
+
+        # 1) 배경판 (먼저 만들어야 content 보다 아래에 깔림)
+        self.glass = tk.Toplevel(app.root)
+        self.glass.overrideredirect(True)
+        self.glass.configure(bg=GLASS_KEY)
+        set_attr(self.glass, "-transparentcolor", GLASS_KEY)
+        self.glass_canvas = tk.Canvas(self.glass, bg=GLASS_KEY, highlightthickness=0, bd=0)
+        self.glass_canvas.pack(fill="both", expand=True)
+
+        # 2) 내용 창
+        super().__init__(app.root)
         self.overrideredirect(True)
-        self.configure(bg=self.T["border"])
+        self.configure(bg=T["key"])
         self.wm_title("%s - %s" % (APP_TITLE, self.caption))
+        set_attr(self, "-transparentcolor", T["key"])
+        try:
+            self.transient(self.glass)  # 항상 배경판 위에
+        except tk.TclError:
+            pass
 
-        self.outer = tk.Frame(self, bg=self.T["bg"], padx=12, pady=10)
-        self.outer.pack(fill="both", expand=True, padx=1, pady=1)
-
-        self.header = tk.Frame(self.outer, bg=self.T["bg"])
+        self.outer = tk.Frame(self, bg=T["key"], padx=18, pady=16)
+        self.outer.pack(fill="both", expand=True)
+        self.header = tk.Frame(self.outer, bg=T["key"])
         self.header.pack(fill="x")
-        self.title_lbl = tk.Label(self.header, text=self.caption, font=self.F.title,
-                                  bg=self.T["bg"], fg=self.T["fg"])
+        self.title_lbl = self.label(self.header, self.caption, font=self.F.title, fg=T[self.caption_color])
         self.title_lbl.pack(side="left")
-        self.sub_lbl = tk.Label(self.header, text="", font=self.F.small,
-                                bg=self.T["bg"], fg=self.T["muted"])
-        self.sub_lbl.pack(side="left", padx=(6, 0))
-        self.btns = tk.Frame(self.header, bg=self.T["bg"])
+        self.sub_lbl = self.label(self.header, "", font=self.F.small, fg=T["muted"])
+        self.sub_lbl.pack(side="left", padx=(6, 0), pady=(3, 0))
+        self.btns = tk.Frame(self.header, bg=T["key"])
         self.btns.pack(side="right")
+        self.body = tk.Frame(self.outer, bg=T["key"])
+        self.body.pack(fill="both", expand=True, pady=(10, 0))
 
-        self.body = tk.Frame(self.outer, bg=self.T["bg"])
-        self.body.pack(fill="both", expand=True, pady=(8, 0))
-
-        for w in (self.header, self.title_lbl, self.sub_lbl):
-            w.bind("<ButtonPress-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag_move)
-            w.bind("<ButtonRelease-1>", self._drag_end)
-
-        self.build_buttons()
-        self.render()
+        for w in (self.glass, self.glass_canvas):
+            self._bind_drag(w)
+            w.bind("<Button-3>", self._popup_menu)
 
         x, y = self.app.store.settings["positions"].get(self.key, self.default_pos)
-        x, y = self._clamp(x, y)
-        self.geometry("+%d+%d" % (x, y))
+        self._pos = self._clamp(x, y)
+        self.build_buttons()
+        self.render()
         self.apply_window_style()
+        # 처음 화면에 나타난 직후 위치를 한 번 더 지정 (일부 환경에서 0,0 에 뜨는 문제 방지)
+        self.after(100, lambda: self.move_to(*self._pos))
 
     # --- 공통 UI 도우미 ---
-    def header_button(self, text, cmd, tip=None):
-        b = tk.Label(self.btns, text=text, font=self.F.bold, bg=self.T["bg"],
-                     fg=self.T["muted"], padx=5, cursor="hand2")
+    def label(self, parent, text, font=None, fg=None, **kw):
+        return tk.Label(parent, text=text, font=font or self.F.normal, fg=fg or self.T["fg"],
+                        bg=self.T["key"], bd=0, **kw)
+
+    def header_button(self, text, cmd):
+        T = self.T
+        b = self.label(self.btns, text, font=self.F.bold, fg=T["muted"], padx=4, cursor="hand2")
         b.pack(side="left")
+        b._no_drag = True
         b.bind("<Button-1>", lambda e: cmd())
-        b.bind("<Enter>", lambda e: b.configure(fg=self.T["accent"]))
-        b.bind("<Leave>", lambda e: b.configure(fg=self.T["muted"]))
+        b.bind("<Enter>", lambda e: b.configure(fg=T["fg"]))
+        b.bind("<Leave>", lambda e: b.configure(fg=T["muted"]))
         return b
 
-    def label(self, parent, text, font=None, fg=None, bg=None, **kw):
-        return tk.Label(parent, text=text, font=font or self.F.normal,
-                        fg=fg or self.T["fg"], bg=bg or self.T["bg"], **kw)
+    def spacer(self, parent=None, h=1):
+        tk.Frame(parent or self.body, bg=self.T["key"], width=self.min_width - 36, height=h).pack()
 
     def clear_body(self):
         for c in self.body.winfo_children():
             c.destroy()
 
     def finish_render(self):
-        self._bind_context(self)
+        self._bind_all(self)
+        self.sync_glass()
 
-    def _bind_context(self, w):
-        w.bind("<Button-3>", self._popup_menu, add="+")
-        w.bind("<ButtonRelease-1>", lambda e: self.after(150, self.keep_layer), add="+")
+    def _bind_all(self, w):
+        w.bind("<Button-3>", self._popup_menu)
+        if not getattr(w, "_no_drag", False):
+            self._bind_drag(w)
         for c in w.winfo_children():
-            self._bind_context(c)
+            self._bind_all(c)
+
+    def _bind_drag(self, w):
+        w.bind("<ButtonPress-1>", self._drag_start)
+        w.bind("<B1-Motion>", self._drag_move)
+        w.bind("<ButtonRelease-1>", self._drag_end)
 
     def _popup_menu(self, event):
         self.app.show_menu(self, event.x_root, event.y_root)
         return "break"
 
+    # --- 배경판 크기/모양 맞추기 ---
+    def sync_glass(self):
+        self.update_idletasks()
+        w = max(self.min_width, self.outer.winfo_reqwidth())
+        h = self.outer.winfo_reqheight()
+        x, y = self._pos
+        geo = "%dx%d+%d+%d" % (w, h, x, y)
+        self.geometry(geo)
+        self.glass.geometry(geo)
+        if getattr(self, "_glass_size", None) != (w, h, self.T["glass"]):
+            self._glass_size = (w, h, self.T["glass"])
+            c = self.glass_canvas
+            c.delete("all")
+            c.configure(width=w, height=h)
+            round_rect(c, 0, 0, w - 1, h - 1, RADIUS, fill=self.T["glass"], outline=self.T["edge"])
+
+    def move_to(self, x, y):
+        self._pos = (int(x), int(y))
+        self.glass.geometry("+%d+%d" % self._pos)
+        self.geometry("+%d+%d" % self._pos)
+
+    def destroy(self):
+        try:
+            self.glass.destroy()
+        except tk.TclError:
+            pass
+        super().destroy()
+
     # --- 창 스타일 ---
     def apply_window_style(self):
         s = self.app.store.settings
-        try:
-            self.attributes("-alpha", max(0.3, min(1.0, float(s.get("opacity", 0.93)))))
-        except tk.TclError:
-            pass
-        self.attributes("-topmost", s.get("layer") == "top")
-        self.after(50, lambda: win_round_corners(self))
+        op = max(0.15, min(1.0, float(s.get("opacity", 0.6))))
+        set_attr(self.glass, "-alpha", op)
+        top = s.get("layer") == "top"
+        set_attr(self.glass, "-topmost", top)
+        set_attr(self, "-topmost", top)
+        win_blur(self.glass, s.get("blur", False), self.T["glass"])
         self.keep_layer()
 
     def keep_layer(self):
-        if self.app.store.settings.get("layer") == "bottom":
-            win_send_to_bottom(self)
+        layer = self.app.store.settings.get("layer")
+        if layer == "bottom" and IS_WIN:
+            win_stack_bottom(self, self.glass)
+        else:
+            self.glass.lift()
+            self.lift()
 
     # --- 드래그 ---
     def _drag_start(self, e):
         self._drag = None
-        if self.app.store.settings.get("locked"):
-            return
-        self._drag = (e.x_root - self.winfo_x(), e.y_root - self.winfo_y())
+        if not self.app.store.settings.get("locked"):
+            self._drag = (e.x_root - self._pos[0], e.y_root - self._pos[1])
 
     def _drag_move(self, e):
         if getattr(self, "_drag", None):
             dx, dy = self._drag
-            self.geometry("+%d+%d" % (e.x_root - dx, e.y_root - dy))
+            self.move_to(e.x_root - dx, e.y_root - dy)
 
     def _drag_end(self, e):
         if getattr(self, "_drag", None):
-            self.app.store.settings["positions"][self.key] = [self.winfo_x(), self.winfo_y()]
+            self.app.store.settings["positions"][self.key] = list(self._pos)
             self.app.store.save()
         self._drag = None
         self.after(150, self.keep_layer)
 
     def _clamp(self, x, y):
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        # 다중 모니터에서 음수 좌표도 허용하되, 너무 멀리 벗어나면 기본 위치
         if not (-sw <= x <= sw * 3 and -sh <= y <= sh * 3):
             return self.default_pos
         return int(x), int(y)
@@ -616,8 +722,10 @@ class BaseWidget(tk.Toplevel):
 class CalendarWidget(BaseWidget):
     key = "calendar"
     caption = "캘린더"
+    caption_color = "red"
     default_pos = (40, 60)
-    CELL_W, CELL_H = 40, 34
+    CELL_W, CELL_H = 38, 32
+    HEAD_H = 22
 
     def __init__(self, app):
         today = dt.date.today()
@@ -625,9 +733,8 @@ class CalendarWidget(BaseWidget):
         super().__init__(app)
 
     def build_buttons(self):
-        self.header_button("◀", lambda: self.shift(-1))
-        self.header_button("오늘", self.go_today)
-        self.header_button("▶", lambda: self.shift(1))
+        self.header_button("‹", lambda: self.shift(-1))
+        self.header_button("›", lambda: self.shift(1))
 
     def shift(self, n):
         m = self.month - 1 + n
@@ -642,56 +749,56 @@ class CalendarWidget(BaseWidget):
     def render(self):
         self.clear_body()
         T, F = self.T, self.F
-        self.sub_lbl.configure(text="%d년 %d월" % (self.year, self.month))
-        W, H = self.CELL_W, self.CELL_H
-        cal = calendar.Calendar(firstweekday=6)  # 일요일 시작
-        weeks = cal.monthdatescalendar(self.year, self.month)
-        c = tk.Canvas(self.body, width=W * 7, height=24 + H * len(weeks),
-                      bg=T["bg"], highlightthickness=0, bd=0)
-        c.pack()
-        heads = ["일", "월", "화", "수", "목", "금", "토"]
-        for i, h in enumerate(heads):
-            color = T["sun"] if i == 0 else T["sat"] if i == 6 else T["muted"]
-            c.create_text(i * W + W / 2, 11, text=h, fill=color, font=F.small)
         today = dt.date.today()
+        self.title_lbl.configure(text="%d월" % self.month)
+        self.sub_lbl.configure(text="%d" % self.year if self.year == today.year else "%d년" % self.year)
+        if (self.year, self.month) != (today.year, today.month):
+            self.title_lbl.configure(cursor="hand2")
+            self.title_lbl.bind("<Button-1>", lambda e: self.go_today())
+            self.title_lbl._no_drag = True
+        W, H, HH = self.CELL_W, self.CELL_H, self.HEAD_H
+        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(self.year, self.month)
+        c = tk.Canvas(self.body, width=W * 7, height=HH + H * len(weeks),
+                      bg=T["key"], highlightthickness=0, bd=0)
+        c._no_drag = True
+        c.pack()
+        for i, h in enumerate(["일", "월", "화", "수", "목", "금", "토"]):
+            c.create_text(i * W + W / 2, HH / 2 - 2, text=h, font=F.caption,
+                          fill=T["red"] if i == 0 else T["muted"])
         ev_dates = self.app.store.event_dates()
         self._cells = {}
         for r, week in enumerate(weeks):
             for i, d in enumerate(week):
-                x0, y0 = i * W, 24 + r * H
-                cx, cy = x0 + W / 2, y0 + H / 2 - 3
+                cx, cy = i * W + W / 2, HH + r * H + H / 2 - 2
                 other = d.month != self.month
-                hol = holiday_name(d)
-                if d == today:
-                    c.create_oval(cx - 13, cy - 12, cx + 13, cy + 12, fill=T["accent"], outline="")
-                    color = T["accent_fg"]
-                elif other:
-                    color = T["past"]
-                elif hol or i == 0:
-                    color = T["sun"]
-                elif i == 6:
-                    color = T["sat"]
+                if other:
+                    color = T["faint"]
+                elif d == today:
+                    color = T["on_accent"]
+                elif holiday_name(d) or i == 0:
+                    color = T["red"]
                 else:
                     color = T["fg"]
+                if d == today:
+                    c.create_oval(cx - 13, cy - 13, cx + 13, cy + 13, fill=T["red"], outline="")
                 c.create_text(cx, cy, text=str(d.day), fill=color,
-                              font=F.bold if d == today else F.normal)
-                if d.isoformat() in ev_dates:
-                    c.create_oval(cx - 2.5, y0 + H - 7, cx + 2.5, y0 + H - 2,
-                                  fill=T["dot"] if not other else T["past"], outline="")
+                              font=F.num_bold if d == today else F.num)
+                if d.isoformat() in ev_dates and not other and d != today:
+                    c.create_oval(cx - 2, cy + 12, cx + 2, cy + 16, fill=T["orange"], outline="")
                 self._cells[(r, i)] = d
         c.bind("<Button-1>", self._click)
         c.bind("<Motion>", lambda e: self._hover(c, e))
         c.bind("<Leave>", lambda e: self._show_info(None))
-
-        self.info = self.label(self.body, "", font=F.small, fg=T["muted"], anchor="w")
-        self.info.pack(fill="x", pady=(4, 0))
+        self.info = self.label(self.body, "", font=F.small, fg=T["muted"], anchor="w",
+                               wraplength=W * 7, justify="left")
+        self.info.pack(fill="x", pady=(6, 0))
         self._show_info(None)
         self.finish_render()
 
     def _cell_at(self, e):
-        if e.y < 24:
+        if e.y < self.HEAD_H:
             return None
-        return self._cells.get(((e.y - 24) // self.CELL_H, e.x // self.CELL_W))
+        return self._cells.get(((e.y - self.HEAD_H) // self.CELL_H, e.x // self.CELL_W))
 
     def _hover(self, canvas, e):
         d = self._cell_at(e)
@@ -699,15 +806,14 @@ class CalendarWidget(BaseWidget):
         self._show_info(d)
 
     def _show_info(self, d):
-        if not hasattr(self, "info"):
+        if not hasattr(self, "info") or not self.info.winfo_exists():
             return
         if d is None:
-            # 이번 달 공휴일 요약
             hols = sorted((k, v) for k, v in korean_holidays(self.year).items() if k.month == self.month)
-            txt = "  ".join("%d일 %s" % (k.day, v) for k, v in hols[:4])
-            self.info.configure(text=txt or "날짜를 클릭하면 일정을 추가할 수 있어요")
+            txt = "   ".join("%d일 %s" % (k.day, v) for k, v in hols[:3])
+            self.info.configure(text=txt or "날짜를 누르면 일정을 추가할 수 있어요")
             return
-        parts = [fmt_date(d)]
+        parts = [fmt_short(d)]
         if holiday_name(d):
             parts.append(holiday_name(d))
         evs = self.app.store.events_on(d.isoformat())
@@ -720,9 +826,6 @@ class CalendarWidget(BaseWidget):
         if d:
             self.app.open_event_editor(d)
 
-    def tick(self, now):
-        pass
-
 
 # ----------------------------------------------------------------------------
 # 2) 수업시간표
@@ -730,8 +833,9 @@ class CalendarWidget(BaseWidget):
 
 class TimetableWidget(BaseWidget):
     key = "timetable"
-    caption = "수업시간표"
-    default_pos = (40, 380)
+    caption = "시간표"
+    caption_color = "blue"
+    default_pos = (40, 400)
 
     def build_buttons(self):
         self.view_btn = self.header_button("주간", self.toggle_view)
@@ -744,139 +848,148 @@ class TimetableWidget(BaseWidget):
         self.render()
 
     def current_state(self, now):
-        """(상태문구, 현재교시 index 또는 None)"""
-        wd = now.weekday()
+        """지금 상황을 dict 로: kind = class|break|lunch|before|done|weekend|holiday|empty"""
+        wd, store = now.weekday(), self.app.store
         if wd >= SCHOOL_DAYS:
-            return "주말이에요. 푹 쉬세요!", None
-        if holiday_name(now.date()):
-            return "오늘은 %s - 쉬는 날!" % holiday_name(now.date()), None
-        periods = self.app.store.data["periods"]
-        mins = now.hour * 60 + now.minute
-        last = None
-        for i, p in enumerate(periods):
-            subj = self.app.store.subject(wd, i)
-            if subj:
-                last = i
+            return {"kind": "weekend", "idx": None, "head": "주말", "text": "푹 쉬고 월요일에 만나요"}
+        hol = holiday_name(now.date())
+        if hol:
+            return {"kind": "holiday", "idx": None, "head": hol, "text": "오늘은 쉬는 날이에요"}
+        periods = store.data["periods"]
+        last = max([i for i in range(len(periods)) if store.subject(wd, i)], default=None)
         if last is None:
-            return "오늘은 수업이 없어요", None
+            return {"kind": "empty", "idx": None, "head": "수업 없음", "text": "시간표 편집에서 과목을 입력하세요"}
+        mins = now.hour * 60 + now.minute
         for i, p in enumerate(periods[: last + 1]):
             s, e = parse_hm(p["start"]), parse_hm(p["end"])
             if s is None or e is None:
                 continue
-            subj = self.app.store.subject(wd, i) or "-"
+            subj = store.subject(wd, i) or "-"
             if s <= mins < e:
-                return "지금 %s %s · %s까지 (%d분 남음)" % (p["name"], subj, p["end"], e - mins), i
+                return {"kind": "class", "idx": i, "label": "지금 · " + p["name"], "head": subj,
+                        "text": "%s까지 · %d분 남음" % (p["end"], e - mins),
+                        "progress": (mins - s) / max(1, e - s)}
             if mins < s:
-                gap_start = parse_hm(periods[i - 1]["end"]) if i > 0 else None
-                if gap_start is not None and s - gap_start >= 30 and mins >= gap_start:
-                    kind = "점심시간"
-                elif i == 0:
-                    kind = "수업 전"
+                prev_end = parse_hm(periods[i - 1]["end"]) if i > 0 else None
+                if i == 0:
+                    kind, what = "before", "수업 전"
+                elif prev_end is not None and s - prev_end >= 30:
+                    kind, what = "lunch", "점심시간"
                 else:
-                    kind = "쉬는 시간"
-                return "%s · 다음 %s %s (%s)" % (kind, p["name"], subj, p["start"]), None
-        return "오늘 수업 끝! 수고했어요", None
+                    kind, what = "break", "쉬는 시간"
+                return {"kind": kind, "idx": None, "next": i, "label": "다음 · " + p["name"], "head": subj,
+                        "text": "%s 시작 · %s" % (p["start"], what)}
+        return {"kind": "done", "idx": None, "head": "수업 끝!", "text": "오늘도 수고했어요"}
 
     def render(self):
         self.clear_body()
         now = dt.datetime.now()
         view = self.app.store.settings.get("timetable_view", "today")
         self.view_btn.configure(text="오늘" if view == "week" else "주간")
+        self._state_key = None
         if view == "week" or now.weekday() >= SCHOOL_DAYS:
             self._render_week(now)
         else:
             self._render_today(now)
-        self.status = self.label(self.body, "", font=self.F.small, fg=self.T["now"], anchor="w")
-        self.status.pack(fill="x", pady=(8, 0))
-        self._last_state = None
-        self.tick(now)
         self.finish_render()
 
     def _render_today(self, now):
-        T, F = self.T, self.F
+        T, F, store = self.T, self.F, self.app.store
+        st = self.current_state(now)
+        self._state_key = ("today", st["kind"], st.get("idx"), st.get("next"))
         self.sub_lbl.configure(text=fmt_date(now.date()))
+
+        # 큰 글씨 영역
+        hero = tk.Frame(self.body, bg=T["key"])
+        hero.pack(fill="x")
+        if st.get("label"):
+            self.label(hero, st["label"], font=F.caption,
+                       fg=T["blue"] if st["kind"] == "class" else T["muted"], anchor="w").pack(fill="x")
+        self.label(hero, st["head"], font=F.hero, anchor="w").pack(fill="x")
+        self.hero_text = self.label(hero, st["text"], font=F.small, fg=T["muted"], anchor="w")
+        self.hero_text.pack(fill="x")
+        self.bar = None
+        if st["kind"] == "class":
+            self.bar = tk.Canvas(hero, height=6, width=self.min_width - 36, bg=T["key"],
+                                 highlightthickness=0, bd=0)
+            self.bar.pack(fill="x", pady=(8, 0))
+            self._draw_bar(st["progress"])
+
+        # 교시 목록
         wd = now.weekday()
-        periods = self.app.store.data["periods"]
-        last = -1
-        for i in range(len(periods)):
-            if self.app.store.subject(wd, i):
-                last = i
-        self.rows = []
-        frame = tk.Frame(self.body, bg=T["bg"])
-        frame.pack(fill="x")
-        if last < 0:
-            self.label(frame, "등록된 수업이 없어요", fg=T["muted"]).pack(anchor="w", pady=6)
+        periods = store.data["periods"]
+        last = max([i for i in range(len(periods)) if store.subject(wd, i)], default=-1)
+        if last >= 0:
+            tk.Frame(self.body, bg=T["line"], height=1).pack(fill="x", pady=(12, 8))
+        mins = now.hour * 60 + now.minute
+        holiday = bool(holiday_name(now.date()))
+        nxt = st.get("next")
         for i in range(last + 1):
             p = periods[i]
-            row = tk.Frame(frame, bg=T["card"], padx=8, pady=4)
-            row.pack(fill="x", pady=1)
-            n = self.label(row, p["name"], font=F.small, fg=T["muted"], bg=T["card"], width=5, anchor="w")
-            n.pack(side="left")
-            s = self.label(row, self.app.store.subject(wd, i) or "-", font=F.bold, bg=T["card"], anchor="w")
-            s.pack(side="left", fill="x", expand=True)
-            t = self.label(row, "%s~%s" % (p["start"], p["end"]), font=F.small, fg=T["muted"], bg=T["card"])
-            t.pack(side="right")
-            self.rows.append((row, n, s, t, i))
-        frame.configure(width=280)
+            end = parse_hm(p["end"])
+            cur = i == st.get("idx")
+            past = not holiday and end is not None and mins >= end
+            row = tk.Frame(self.body, bg=T["key"])
+            row.pack(fill="x", pady=2)
+            col = T["blue"] if cur else T["faint"] if past else T["fg"]
+            mcol = T["blue"] if cur else T["faint"] if past else T["muted"]
+            self.label(row, "●" if cur else "○" if i == nxt else " ", font=F.small,
+                       fg=T["blue"] if (cur or i == nxt) else T["key"], width=2).pack(side="left")
+            self.label(row, str(i + 1), font=F.num_bold if cur else F.num, fg=mcol, width=2, anchor="w").pack(side="left")
+            self.label(row, store.subject(wd, i) or "-", font=F.bold if cur else F.normal,
+                       fg=col, anchor="w").pack(side="left", padx=(4, 0))
+            self.label(row, p["start"], font=F.num_small, fg=mcol).pack(side="right")
+        self.spacer()
+
+    def _draw_bar(self, progress):
+        T, c = self.T, self.bar
+        w = self.min_width - 36
+        c.delete("all")
+        c.create_line(3, 3, w - 3, 3, fill=T["line"], width=5, capstyle="round")
+        x = 3 + (w - 6) * max(0.0, min(1.0, progress))
+        c.create_line(3, 3, max(4, x), 3, fill=T["blue"], width=5, capstyle="round")
 
     def _render_week(self, now):
-        T, F = self.T, self.F
+        T, F, store = self.T, self.F, self.app.store
+        st = self.current_state(now)
+        self._state_key = ("week", st.get("idx"), now.weekday())
         monday = school_week(now.date())
-        self.sub_lbl.configure(text="%d/%d ~ %d/%d" % (
-            monday.month, monday.day, (monday + dt.timedelta(4)).month, (monday + dt.timedelta(4)).day))
-        self.rows = []
-        periods = self.app.store.data["periods"]
-        grid = tk.Frame(self.body, bg=T["border"])
-        grid.pack()
+        fri = monday + dt.timedelta(4)
+        self.sub_lbl.configure(text="%d/%d – %d/%d" % (monday.month, monday.day, fri.month, fri.day))
         today_wd = now.weekday() if now.weekday() < SCHOOL_DAYS else -1
-        self.label(grid, "", bg=T["card"], width=3).grid(row=0, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        grid = tk.Frame(self.body, bg=T["key"])
+        grid.pack(anchor="w")
+        self.label(grid, "", width=2).grid(row=0, column=0)
         for d in range(SCHOOL_DAYS):
             hl = d == today_wd
-            self.label(grid, DAYS[d], font=F.bold, bg=T["accent"] if hl else T["card"],
-                       fg=T["accent_fg"] if hl else T["muted"], width=6, pady=3
-                       ).grid(row=0, column=d + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
-        self.week_cells = {}
-        for i, p in enumerate(periods):
-            self.label(grid, str(i + 1), font=F.small, fg=T["muted"], bg=T["card"], pady=3
-                       ).grid(row=i + 1, column=0, sticky="nsew", padx=(0, 1), pady=(0, 1))
+            self.label(grid, DAYS[d], font=F.caption, fg=T["blue"] if hl else T["muted"],
+                       width=6, pady=2).grid(row=0, column=d + 1)
+        for i in range(len(store.data["periods"])):
+            if not any(store.subject(d, i) for d in range(SCHOOL_DAYS)):
+                continue
+            self.label(grid, str(i + 1), font=F.num_small, fg=T["faint"], pady=3).grid(row=i + 1, column=0)
             for d in range(SCHOOL_DAYS):
-                hl = d == today_wd
-                cell = self.label(grid, self.app.store.subject(d, i), font=F.small,
-                                  bg=T["accent_soft"] if hl else T["card"], width=6, pady=3)
-                cell.grid(row=i + 1, column=d + 1, sticky="nsew", padx=(0, 1), pady=(0, 1))
-                self.week_cells[(d, i)] = cell
+                cur = d == today_wd and i == st.get("idx")
+                fg = T["blue"] if cur else T["fg"] if d == today_wd else T["muted"]
+                self.label(grid, store.subject(d, i), font=F.bold if cur else F.small, fg=fg,
+                           width=6, pady=3).grid(row=i + 1, column=d + 1)
+        self.spacer(h=4)
 
     def tick(self, now):
-        text, cur = self.current_state(now)
-        if (text, cur) == self._last_state:
+        view = self.app.store.settings.get("timetable_view", "today")
+        if view == "week" or now.weekday() >= SCHOOL_DAYS:
+            key = ("week", self.current_state(now).get("idx"), now.weekday())
+            if key != self._state_key:
+                self.render()
             return
-        self._last_state = (text, cur)
-        self.status.configure(text=text)
-        T = self.T
-        mins = now.hour * 60 + now.minute
-        periods = self.app.store.data["periods"]
-        is_school = now.weekday() < SCHOOL_DAYS and not holiday_name(now.date())
-        for row, n, s, t, i in getattr(self, "rows", []):
-            end = parse_hm(periods[i]["end"]) if i < len(periods) else None
-            if i == cur:
-                bg, fg, mfg = T["accent"], T["accent_fg"], T["accent_fg"]
-            elif is_school and end is not None and mins >= end:
-                bg, fg, mfg = T["card"], T["past"], T["past"]
-            else:
-                bg, fg, mfg = T["card"], T["fg"], T["muted"]
-            row.configure(bg=bg)
-            n.configure(bg=bg, fg=mfg)
-            s.configure(bg=bg, fg=fg)
-            t.configure(bg=bg, fg=mfg)
-        if hasattr(self, "week_cells") and self.app.store.settings.get("timetable_view") == "week":
-            wd = now.weekday()
-            for (d, i), cell in self.week_cells.items():
-                if not cell.winfo_exists():
-                    continue
-                if d == wd and i == cur:
-                    cell.configure(bg=T["accent"], fg=T["accent_fg"])
-                else:
-                    cell.configure(bg=T["accent_soft"] if d == wd else T["card"], fg=T["fg"])
+        st = self.current_state(now)
+        if ("today", st["kind"], st.get("idx"), st.get("next")) != self._state_key:
+            self.render()
+            return
+        if self.hero_text.winfo_exists():
+            self.hero_text.configure(text=st["text"])
+        if self.bar is not None and "progress" in st:
+            self._draw_bar(st["progress"])
 
 
 # ----------------------------------------------------------------------------
@@ -885,37 +998,44 @@ class TimetableWidget(BaseWidget):
 
 class EventsWidget(BaseWidget):
     key = "events"
-    caption = "오늘 학교행사"
-    default_pos = (360, 60)
+    caption = "학교행사"
+    caption_color = "orange"
+    default_pos = (370, 60)
     UPCOMING_DAYS = 30
     UPCOMING_MAX = 5
 
     def build_buttons(self):
         self.header_button("+", lambda: self.app.open_event_editor(dt.date.today()))
 
+    def _event_row(self, color, title, sub=None):
+        T, F = self.T, self.F
+        row = tk.Frame(self.body, bg=T["key"])
+        row.pack(fill="x", pady=3)
+        bar = tk.Canvas(row, width=4, height=34 if sub else 20, bg=T["key"], highlightthickness=0, bd=0)
+        bar.create_line(2, 2, 2, (34 if sub else 20) - 2, fill=color, width=4, capstyle="round")
+        bar.pack(side="left", padx=(0, 10))
+        txt = tk.Frame(row, bg=T["key"])
+        txt.pack(side="left", fill="x")
+        self.label(txt, title, font=F.bold, anchor="w", justify="left",
+                   wraplength=self.min_width - 70).pack(fill="x")
+        if sub:
+            self.label(txt, sub, font=F.small, fg=T["muted"], anchor="w").pack(fill="x")
+
     def render(self):
         self.clear_body()
-        T, F = self.T, self.F
+        T, F, store = self.T, self.F, self.app.store
         today = dt.date.today()
         self.sub_lbl.configure(text=fmt_date(today))
-        store = self.app.store
 
-        box = tk.Frame(self.body, bg=T["card"], padx=10, pady=8)
-        box.pack(fill="x")
+        self.label(self.body, "오늘", font=F.caption, fg=T["muted"], anchor="w").pack(fill="x", pady=(0, 2))
         hol = holiday_name(today)
         if hol:
-            self.label(box, "공휴일 · " + hol, font=F.bold, fg=T["sun"], bg=T["card"], anchor="w").pack(fill="x")
+            self._event_row(T["red"], hol, "공휴일")
         evs = store.events_on(today.isoformat())
+        for n, e in enumerate(evs):
+            self._event_row(T[EVENT_COLORS[n % len(EVENT_COLORS)]], e["title"], e.get("time") or "하루 종일")
         if not evs and not hol:
-            self.label(box, "오늘은 예정된 행사가 없어요", fg=T["muted"], bg=T["card"], anchor="w").pack(fill="x")
-        for e in evs:
-            line = tk.Frame(box, bg=T["card"])
-            line.pack(fill="x", pady=1)
-            self.label(line, "●", font=F.small, fg=T["dot"], bg=T["card"]).pack(side="left")
-            if e.get("time"):
-                self.label(line, e["time"], font=F.small, fg=T["muted"], bg=T["card"]).pack(side="left", padx=(4, 0))
-            self.label(line, e["title"], font=F.bold, bg=T["card"], anchor="w",
-                       wraplength=230, justify="left").pack(side="left", padx=(4, 0), fill="x")
+            self.label(self.body, "예정된 행사가 없어요", font=F.normal, fg=T["faint"], anchor="w").pack(fill="x", pady=2)
 
         upcoming = []
         for e in store.data["events"]:
@@ -926,23 +1046,23 @@ class EventsWidget(BaseWidget):
             if today < d <= today + dt.timedelta(days=self.UPCOMING_DAYS):
                 upcoming.append((d, e.get("time") or "", e["title"]))
         upcoming.sort()
-        self.label(self.body, "다가오는 일정", font=F.small, fg=T["muted"], anchor="w").pack(fill="x", pady=(10, 2))
+        tk.Frame(self.body, bg=T["line"], height=1).pack(fill="x", pady=(12, 8))
+        self.label(self.body, "다가오는 일정", font=F.caption, fg=T["muted"], anchor="w").pack(fill="x", pady=(0, 4))
         if not upcoming:
             self.label(self.body, "앞으로 %d일간 일정이 없어요" % self.UPCOMING_DAYS,
-                       font=F.small, fg=T["past"], anchor="w").pack(fill="x")
+                       font=F.small, fg=T["faint"], anchor="w").pack(fill="x")
         for d, _, title in upcoming[: self.UPCOMING_MAX]:
-            line = tk.Frame(self.body, bg=T["bg"])
-            line.pack(fill="x", pady=1)
+            line = tk.Frame(self.body, bg=T["key"])
+            line.pack(fill="x", pady=2)
             dd = (d - today).days
-            self.label(line, "D-%d" % dd, font=F.bold, width=5, anchor="w",
-                       fg=T["accent"] if dd <= 3 else T["muted"]).pack(side="left")
-            self.label(line, fmt_date(d), font=F.small, fg=T["muted"], width=9, anchor="w").pack(side="left")
-            self.label(line, title, font=F.normal, anchor="w").pack(side="left", fill="x")
+            self.label(line, fmt_short(d), font=F.num_small, fg=T["muted"], width=9, anchor="w").pack(side="left")
+            self.label(line, title, font=F.normal, anchor="w").pack(side="left")
+            self.label(line, "D-%d" % dd, font=F.num_bold,
+                       fg=T["blue"] if dd <= 3 else T["faint"]).pack(side="right")
         if len(upcoming) > self.UPCOMING_MAX:
             self.label(self.body, "외 %d건" % (len(upcoming) - self.UPCOMING_MAX), font=F.small,
-                       fg=T["muted"], anchor="e").pack(fill="x")
-        spacer = tk.Frame(self.body, bg=T["bg"], width=290, height=1)
-        spacer.pack()
+                       fg=T["faint"], anchor="e").pack(fill="x")
+        self.spacer()
         self.finish_render()
 
 
@@ -1203,7 +1323,8 @@ class SettingsDialog(Dialog):
         nb.add(g, text="  일반  ")
         self.theme = tk.StringVar(value=s.get("theme", "dark"))
         self.layer = tk.StringVar(value=s.get("layer", "bottom"))
-        self.opacity = tk.IntVar(value=int(float(s.get("opacity", 0.93)) * 100))
+        self.opacity = tk.IntVar(value=int(float(s.get("opacity", 0.6)) * 100))
+        self.blur = tk.BooleanVar(value=s.get("blur", False))
         self.locked = tk.BooleanVar(value=s.get("locked", False))
         self.startup = tk.BooleanVar(value=startup_enabled())
         self.vis = {k: tk.BooleanVar(value=v) for k, v in s["visible"].items()}
@@ -1215,13 +1336,18 @@ class SettingsDialog(Dialog):
         ttk.Radiobutton(f, text="다크", variable=self.theme, value="dark").pack(side="left")
         ttk.Radiobutton(f, text="라이트", variable=self.theme, value="light").pack(side="left", padx=8)
         r += 1
-        ttk.Label(g, text="불투명도").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(g, text="배경 불투명도").grid(row=r, column=0, sticky="w", pady=4)
         f = ttk.Frame(g)
         f.grid(row=r, column=1, sticky="w")
         self.op_lbl = ttk.Label(f, text="%d%%" % self.opacity.get(), width=5)
-        ttk.Scale(f, from_=30, to=100, variable=self.opacity, length=180,
+        ttk.Scale(f, from_=15, to=100, variable=self.opacity, length=180,
                   command=self._preview_opacity).pack(side="left")
         self.op_lbl.pack(side="left", padx=6)
+        r += 1
+        cb = ttk.Checkbutton(g, text="배경 흐림(블러) 효과 - 실험적, Windows 10/11", variable=self.blur)
+        cb.grid(row=r, column=1, sticky="w")
+        if not IS_WIN:
+            cb.state(["disabled"])
         r += 1
         ttk.Label(g, text="창 배치").grid(row=r, column=0, sticky="nw", pady=4)
         f = ttk.Frame(g)
@@ -1308,7 +1434,7 @@ class SettingsDialog(Dialog):
         self.op_lbl.configure(text="%d%%" % v)
         for w in self.app.widgets.values():
             try:
-                w.attributes("-alpha", v / 100)
+                w.glass.attributes("-alpha", v / 100)
             except tk.TclError:
                 pass
 
@@ -1372,6 +1498,7 @@ class SettingsDialog(Dialog):
         s["theme"] = self.theme.get()
         s["layer"] = self.layer.get()
         s["opacity"] = round(self.opacity.get() / 100, 2)
+        s["blur"] = self.blur.get()
         s["locked"] = self.locked.get()
         vis = {k: v.get() for k, v in self.vis.items()}
         if not any(vis.values()):
@@ -1462,8 +1589,8 @@ class App:
     # --- 메뉴 ---
     def show_menu(self, widget, x, y):
         T = self.theme
-        m = tk.Menu(self.root, tearoff=0, bg=T["card"], fg=T["fg"], activebackground=T["accent"],
-                    activeforeground=T["accent_fg"], font=self.fonts.normal)
+        m = tk.Menu(self.root, tearoff=0, bg=T["glass"], fg=T["fg"], activebackground=T["blue"],
+                    activeforeground=T["on_accent"], font=self.fonts.normal)
         m.add_command(label="시간표 편집", command=self.open_timetable_editor)
         m.add_command(label="학교행사 · 일정 편집", command=lambda: self.open_event_editor(dt.date.today()))
         n = self.store.neis
@@ -1495,7 +1622,7 @@ class App:
         self.store.settings["positions"] = {}
         self.store.save()
         for w in self.widgets.values():
-            w.geometry("+%d+%d" % w.default_pos)
+            w.move_to(*w.default_pos)
 
     def _open(self, name, factory):
         d = self.dialogs.get(name)
