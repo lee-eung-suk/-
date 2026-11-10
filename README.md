@@ -13,15 +13,28 @@ Python 기본 라이브러리(tkinter)만 사용하므로 추가 설치가 필�
 | **수업시간표** | 오늘 시간표 + 현재 교시 강조, 지난 교시는 흐리게. "지금 3교시 수학 · 11:35까지 (12분 남음)", "쉬는 시간", "점심시간", "오늘 수업 끝!" 같은 상태 표시. `주간` 버튼으로 월~금 주간 시간표 보기 |
 | **오늘 학교행사** | 오늘의 행사·공휴일, 30일 안에 다가오는 일정을 D-day 로 표시 |
 
-## 실행 방법
+## 설치 방법
 
-### 방법 1) Python 으로 실행
-1. [python.org](https://www.python.org/downloads/) 에서 Python 3.9 이상 설치 (설치 시 **Add python.exe to PATH** 체크)
-2. 이 폴더의 `run.bat` 더블클릭
+### 방법 1) 설치 파일로 설치 (추천)
+1. GitHub 저장소의 **Actions** 탭 → 최신 `Windows 빌드` 실행 → 아래 **Artifacts** 에서 `SchoolWidget-버전` 다운로드
+   (또는 `v1.0.0` 같은 태그를 푸시하면 **Releases** 에 자동으로 올라갑니다)
+2. 압축을 풀고 `SchoolWidget-Setup-버전.exe` 실행 → 다음 → 설치
+   - 관리자 권한 없이 설치됩니다 (`%LOCALAPPDATA%\Programs\SchoolWidget`)
+   - 바탕화면 바로가기 / Windows 시작 시 자동 실행 선택 가능
+   - 제거: 설정 → 앱 → "학교 위젯" 제거 (시간표·일정 데이터는 남겨둡니다)
+3. `SchoolWidget-Portable-버전.exe` 는 설치 없이 바로 실행하는 파일입니다.
 
-### 방법 2) exe 파일로 만들기
-1. `build_exe.bat` 더블클릭 → `dist\SchoolWidget.exe` 생성
-2. exe 를 원하는 폴더에 두고 실행 (Python 이 없는 PC 에서도 실행 가능)
+> 서명되지 않은 프로그램이라 처음 실행할 때 "Windows의 PC 보호" 창이 뜰 수 있어요.
+> **추가 정보 → 실행** 을 누르면 됩니다.
+
+### 방법 2) 내 PC 에서 직접 설치 파일 만들기
+1. [Python](https://www.python.org/downloads/) 3.9 이상 설치 (**Add python.exe to PATH** 체크)
+2. [Inno Setup 6](https://jrsoftware.org/isdl.php) 설치 (무료)
+3. `build_installer.bat` 더블클릭 → `dist_installer\SchoolWidget-Setup-1.0.0.exe` 생성
+   - 설치 파일 없이 exe 하나만 필요하면 `build_exe.bat` → `dist\SchoolWidget.exe`
+
+### 방법 3) Python 으로 바로 실행
+Python 설치 후 `run.bat` 더블클릭
 
 ## 사용법
 

@@ -408,13 +408,22 @@ def win_blur(widget, enable, tint="#1c1c1e"):
         pass
 
 
-def startup_script_path():
+def startup_dir():
     appdata = os.environ.get("APPDATA", "")
-    return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup", APP_NAME + ".vbs")
+    return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup")
+
+
+def startup_script_path():
+    return os.path.join(startup_dir(), APP_NAME + ".vbs")
+
+
+def startup_shortcut_path():
+    """설치 프로그램이 만드는 자동 실행 바로가기."""
+    return os.path.join(startup_dir(), APP_NAME + ".lnk")
 
 
 def startup_enabled():
-    return IS_WIN and os.path.exists(startup_script_path())
+    return IS_WIN and (os.path.exists(startup_script_path()) or os.path.exists(startup_shortcut_path()))
 
 
 def set_startup(enable):
@@ -422,9 +431,12 @@ def set_startup(enable):
         raise OSError("Windows 에서만 지원합니다.")
     path = startup_script_path()
     if not enable:
-        if os.path.exists(path):
-            os.remove(path)
+        for p in (path, startup_shortcut_path()):
+            if os.path.exists(p):
+                os.remove(p)
         return
+    if os.path.exists(startup_shortcut_path()):
+        return  # 설치 프로그램이 이미 등록함
     if getattr(sys, "frozen", False):  # PyInstaller exe
         cmd = '"%s"' % sys.executable
     else:
